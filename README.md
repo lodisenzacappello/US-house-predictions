@@ -20,18 +20,22 @@ FASE 3: STIMA DEI MODELLI ARIMA
     ARIMA(3,1,2)x(1,1,1)
   
     ARIMA(2,1,2)x(1,1,1)
+    
+
+FASE 4: CONTROLLO DELL'IMPATTO DEI REGRESSORI ESTERNI
 
     ARIMA(2,1,2)x(1,1,1) + ["Mon" , "wd"]
   
     ARIMA(3,1,2)x(1,1,1) + ["Mon" , "wd"]
   
     ARIMA(2,1,2)x(1,1,1) + ["Mon" , "wd"]
+    
 
-FASE 4: VALUTAZIONE DELLE ANOMALIE
+FASE 5: VALUTAZIONE DELLE ANOMALIE
 
-FASE 5: DIAGNOSTICHE FINALI SUI RESIDUI DEL MODELLO
+FASE 6: DIAGNOSTICHE FINALI SUI RESIDUI DEL MODELLO
 
-FASE 6: PREVISIONI EX-ANTE
+FASE 7: PREVISIONI EX-ANTE
 
 #------------------------------------------------------------------------------------------------------------------------------------------------
   
