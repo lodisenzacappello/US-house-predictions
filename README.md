@@ -9,6 +9,10 @@ I dati dell'ultimo trimestre del 2025 non erano ancora disponibili in data di an
 
 #------------------------------------------------------------------------------------------------------------------------------------------------
 
+FASE 1: ANALISI ESPLORATIVA DELLA TIME SERIES
+FASE 2: VALUTAZIONE DELLA NON STAZIONARIETA'
+FASE 3: STIMA DEI MODELLI ARIMA
+
 MODELLI TESTATI
 
   ARIMA(2,1,2)x(2,1,1)
@@ -22,6 +26,12 @@ MODELLI TESTATI
   ARIMA(3,1,2)x(1,1,1) + ["Mon" , "wd"]
   
   ARIMA(2,1,2)x(1,1,1) + ["Mon" , "wd"]
+
+FASE 4: VALUTAZIONE DELLE ANOMALIE
+
+FASE 5: DIAGNOSTICHE FINALI SUI RESIDUI DEL MODELLO
+
+FASE 6: PREVISIONI EX-ANTE
   
 #------------------------------------------------------------------------------------------------------------------------------------------------
   
