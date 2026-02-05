@@ -6,6 +6,7 @@ Lo scopo dell'analisi è individuare il modello ARIMA alla base della time serie
 I dati dell'ultimo trimestre del 2025 non erano ancora disponibili in data di analisi a causa dello shutdown governativo che ha colpito gli Stati Uniti dall'1 ottobre.
 
 #--------------------------------------------------------------------------------------------------------------------
+
 MODELLI TESTATI
 
   ARIMA(2,1,2)x(2,1,1)
@@ -19,6 +20,7 @@ MODELLI TESTATI
   ARIMA(3,1,2)x(1,1,1) + ["Mon" , "wd"]
   
   ARIMA(2,1,2)x(1,1,1) + ["Mon" , "wd"]
+  
 #------------------------------------------------------------------------------------------------------------------
   
   
