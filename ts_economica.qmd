@@ -1,0 +1,853 @@
+---
+title: "Analisi time series economica"
+author: "Ludovico Romani"
+format: html
+editor: visual
+---
+
+# ANALISI TS-ECONOMICA
+
+## CREAZIONE DELLA TIME SERIES
+
+#### Introduzione e download dati
+
+```{r}
+rm(list = ls())
+```
+
+La time series economica scelta per l'analisi è stata redatta dall' "**U.S. Census Bureau**" è si tratta della time series sul numero di "**Unità abitative a scopo residenziale autorizzate ma non ancora costruite negli US - Totale delle unita \[migliaia di unità \] non corrette per la stagionalità**". La time series contiene le misurazioni mensili da gennaio 1980 fino ad agosto 2025.
+
+**I dati dell'ultimo trimestre del 2025 non sono ancora disponibili a causa dello shutdown governativo che ha colpito gli Stati Uniti dall'1 ottobre.**
+
+Si tratta di una time series composta da 548 osservazioni.
+
+```{r}
+library(forecast)
+library(tseries)
+library(tsoutliers)
+library(urca)
+library(FinTS)    ## For ArchTest (download from RForge)
+
+source("C:\\Users\\ludov\\OneDrive\\Desktop\\UNIVERSITA'\\TERZO ANNO\\STATISTICA ECONOMICA\\DOC CORSO DA LEZIONI\\TSA-Useful-Functions_2025.R")
+
+source("C:\\Users\\ludov\\OneDrive\\Desktop\\UNIVERSITA'\\TERZO ANNO\\STATISTICA ECONOMICA\\DOC CORSO DA LEZIONI\\CalendarEffects-Student-Functions_2021.R")
+
+source("C:\\Users\\ludov\\OneDrive\\Desktop\\UNIVERSITA'\\TERZO ANNO\\STATISTICA ECONOMICA\\DOC CORSO DA LEZIONI\\TSA-Predict-Student-Functions.R")
+
+```
+
+```{r}
+
+file.data = "C:\\Users\\ludov\\OneDrive\\Desktop\\UNIVERSITA'\\TERZO ANNO\\STATISTICA ECONOMICA\\esame\\new_housing_units_authorized_not_started_USA.csv"
+house = read.table(file = file.data, header = TRUE, sep = ",", quote = "", 
+                   na.strings = ".", check.names = FALSE, comment.char = "")
+head(house)
+tail(house)
+dim(house)
+```
+
+#### Format dates
+
+```{r}
+colnames(house)=c("time","numhouse")
+
+#Il problema nasce dal fatto che le date sono scritte per esteso e in inglese ovvero "Jan-1980" e non "01-1980"
+# Estraggo abbreviazione mese
+monthstr = substr(house$time, 1, 3)
+
+# Converto in numero (1 = Jan, 2 = Feb, ...)
+monthnum = match(monthstr,month.abb)
+monthnum = sprintf("%02d", monthnum)  #passo a 2 cifre per il mese
+
+# Estraggo l'anno
+yearnum = substr(house$time, 5, 8)
+
+# Modifico house$time nel formato MMYYYY
+house$time = paste("01",monthnum,yearnum, sep="")
+house$time = as.Date(x = as.character(house$time), format = "%d%m%Y")
+head(house$time)
+tail(house$time)
+```
+
+#### Creazione time series
+
+```{r}
+start = as.numeric( c( format(house$time[1], "%Y"), format(house$time[1], "%m") ) )
+y = ts( data = house$numhouse, start = start, frequency = 12)
+
+plot(y, ylab="housing units", xlab="time", main="Time series")
+y
+```
+
+#### Regressori esterni
+
+I regressori esterni sono variabili esterne alla time series in esame che forniscono informazioni aggiuntive e permettono di aumentare la qualità della nostra analisi. Si tratta di variabili di calendario e anomalie. Le variabili di calendario sono influenzate dal paese di provenienza della time series in esame poichè derivano in modo determiistico dal calendario civile della nazione. Questo accade perchè i giorni festivi variano da nazione a nazione.
+
+All'interno di "cal" vengono inserite delle colonne dove sono raccolti tutte le variabili di calendario come i giorni della settimana, lo squilibrio dei giorni lavorativi, le festività singole, etc...
+
+```{r}
+#### Calendar effects
+cal = .calendarEffects(time = as.Date(house$time), country = "us")
+#### Seleziono le variabili giorni della settimana + single holidays + long holidays + easter holidays + workdays imbalance (wd)  
+cal = cal[, c("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun", "sh", "lh","wd","eh"), drop = FALSE]
+#### Seleziono 
+# cal = cal[, c("Mon", "Tue", "Wed", "Thu", "Fri", "eh"), drop = FALSE]
+#cal <- cal[, c("wi", "eh"), drop = FALSE] 
+cal = as.matrix(cal)
+
+#### Handmade drift (sometimes useful in tso())
+drift = cbind(drift = 1 : NROW(y))
+```
+
+## ANALISI PRELIMINARE
+
+La prima caratteristica della time series da andare a controllare è la **stazionarietà** di quest'ultima. Iniziamo la nostra analisi con una valutazione della presenza o assenza di stazionarietà all'interno della time series in esame.
+
+**FASI DELL'ANALISI PRELIMINARE**
+
+1.  **TIME SERIES PLOT**
+
+    Traccio il grafico della time series allo scopo di avere un'idea sul suo **movimento allo scorrere del tempo**. Non ci dà grandi informazioni sul modello ARIMA da specificare ma è sempre il punto di inizio.
+
+2.  **ACF E PACF**
+
+    Traccio i grafici dell'ACF e della PACF. Questi servono a valutare visivamente la presenza/assenza di autocorrelazione tra le diverse variabili che compongono la time series. Servono a darci un'idea del modello ARIMA da andare a stimare partendo dalle caratteristiche grafiche del modello.
+
+    Nel caso in cui abbia ACF con decadimento lineare e PACF significativa con valore 1 in lag 1 mi aspetto NON STAZIONARIETA' e quindi PRESENZA DI UNA UR. Se ACF decade linearmente + correlazione parziale phi a lag 1 quasi uguale a 1, ho probabile non stazionarietà data dalla parte non stagionale (quindi d=1).
+
+    Se ACF cade nella regione di rifiuto a lag ricorrenti (es: ogni 12 mesi) + correlazione parziale a lag stagionali inseriti, probabile non stazionarietà data dalla parte stagionale (D=1)
+
+3.  **TEST DF (Dickey-Fuller) e ADF (Augmented Dickey-Fuller) + Procedura Di Fonzo-Lisi**
+
+    Si tratta di test volti a stabilire la presenza di una UR e quindi a valutare la stazionarietà di una time series. In pratica dopo l'analisi grafica tramite PACF e ACF dei dati vado a eseguire un vero e proprio test per andare a confermare le idee che ho ricavato dall'analisi grafica. Tramite procedura di Di Fonzo-Lisi definisco se la time series ha unit root oppure no.
+
+#### Time series plot
+
+```{r}
+plot(y, ylab="thousands", xlab="", main="New housing units authorized but not started in the US")
+y
+min(y)
+max(y)
+```
+
+La time series sembra non essere stazionaria guardando il plot dei dati. Nel gennaio 1980 le unità abitative approvate per la costruzione negli US erano 186.500. Il dato diminuisce nei successivi 2 anni scendendo fino a sotto le 150 mila unità nel dicembre 1981 per poi subire una rapida impennata fino al primo picco di 229.6 mila unità nel marzo 1986. Dopo questo picco il numero di unità abitative approvate per la costruzione scende fino ai minimi relativi nel periodo tra il 1991 e il 1994, continuando a oscillare orizzontalmente fino al primo decennio del 21 secolo. Tra il 2000 e il 2007 si può notare un chiaro rally positivo che porta le unità approvate a toccare le 236 mila unità nel giugno 2006. Il rally positivo si pone tra le due grandi crisi finanziarie che hanno segnato l'economia americana nel primo decennio del 21esimo secolo.
+
+In seguito alla crisi dei subprime del 2008 e il conseguente periodo di crisi economica il numero di nuove unità abitative decresce vistosamente fino ai minimi storici pari a 73.8 mila nuove unità approvate nel novembre 2012.
+
+Dopo un forte periodo di ribassi la time series inizia una risalita durata fino al 2019 spinta dalla ripresa economica americana post crisi del 2008. Nel 2020 il numero di unità abitative approvate subisce una leggera decrescita probabilmente in seguito allo shock COVID. Shock che viene subito assorbito dato che nel triennio 2021-2023 si arriva a toccare i massimi storici con 300.5 mila nuove unità abitative approvate per la costruzione nel marzo 2023.
+
+Durante gli ultimi due anni il numero di unità abitative approvate è sceso leggermente fino a stabilizzarsi in un range tra 250 e 280 mila unità circa.
+
+#### ACF e PACF
+
+Il primo step è eseguire una valutazione a occhio della stazionarietà e perciò vado a tracciare il grafico dell'autocorrelazione ACF e il grafico dell'autocorrelazione parziale PACF per valutare se la time series è stazionaria.
+
+**RISULTATI:** le ACF decadono linearmente e ho correlazione parziale phi a lag 1 quasi uguale a 1, **HO PROBABILE NON STAZIONARIETA' DATA DALLA PARTE NON STAGIONALE** (quindi d=1).
+
+```{r}
+Acf(x = y, type = "correlation", na.action = na.pass, lag.max = 60, main = "ACF housing units")
+Acf(x = y, type = "partial", na.action = na.pass, lag.max = 60, main = "PACF housing units")
+```
+
+#### Test DF e ADF (Dickey-Fuller e Test Augmented Dickey-Fuller)
+
+I test DF e ADF fanno parte del gruppo degli UNIT ROOT TEST ovvero i **test volti a valutare la stazionarietà di una time series**. **La non stazionarietà di una TS può derivare unicamente dalla presenza di radici pari a 1 (RADICI UNITARIE).** Se prima ci basavamo sull'analisi visuale di ACF e PACF per valutare la stazionarietà, adesso abbiamo introdotto questa famiglia di test volta a individuare la presenza di una radice unitaria (L=1). Se ho UR, non ho stazionarietà.
+
+**RISULTATI:** Non rifiuto tau3, non rifiuto phi2, non rifiuto phi3 quindi vado in casella 2. Non rifiuto tau2 e non rifiuto phi1 quindi vado in casella 1. Ho quindi UR e conseguentemente NON HO STAZIONARIETA'.
+
+**IN** **REALTA' IO DOVREI TESTARE ANCHE TAU1 MA NON C'E' NELLO SCRIPT**
+
+```{r}
+library(urca)
+######### DF/ADF tests with trend
+cat("\n-----------------------------------------------------------------
+  Unit root analysis\n")
+#### (DGP:   RW + drift; 
+##    Model: AR(1) + trend (+ other possible stationary terms))
+adf.1 = ur.df(y = y, type = "trend", lags = 24, selectlags = "AIC")
+cat("\n-----\nTest1: ADF with trend\n")
+print( adf.1@teststat )
+print( adf.1@cval )
+##   1) H0(1) -> tau3 A and H0(2) -> phi2 A => no trend, go to 2   
+##   2) H0(3) -> phi3 A                     => no drift, go to 3   
+#### (DGP:   RW; 
+##    Model: AR(1) + drift (+ other possible stationary terms))
+adf.2 = ur.df(y = y, type = "drift", lags = 24, selectlags = "AIC")
+## Following two lines in case one needs to test H0(4) 
+# adf.2 <- .ur.drift(y = y, lags = 24, selectlags = "AIC") 
+# cat("\n-----\nTest2: T with sure presence of drift\n")
+cat("\n-----\nTest2: ADF with drift\n")
+print( adf.2@teststat )
+print( adf.2@cval )
+##   3) H0(5) -> tau2 borderline => UR?
+```
+
+## STIMA MODELLI ARIMA
+
+Le ACF della time series originale decadono linearmente e ho correlazione parziale a lag 1 quasi uguale a 1. Di conseguenza **ho non stazionarietà data dalla parte non stagionale** (quindi d=1); ipotesi poi confermata dal test Dickey-Fuller che sottolinea la presenza di una UR.
+
+---
+order = specifico (p,d,q)
+seasonal = specifico (P,D,Q)
+xreg = regressori esterni
+include.costant = include omega ovvero il drift (di solito esclusa se d+D>=2)
+---
+
+#### Modello (2,1,2)x(2,1,1)
+
+```{r}
+xreg=NULL
+fit = Arima(y = y,
+             order = c(2, 1, 2), seasonal = list(order = c(2,1,1)), 
+             xreg = xreg, include.constant = FALSE)
+print(summary(fit))
+fit1 = fit 
+
+#### Ts plot, acf, pacf, of residuals 
+main="Residuals ARIMA(2,1,2)x(2,1,1)"
+res1=residuals(fit1)
+x1 = res1
+plot(x1, type = "l", main = main, ylab = "")
+Acf(x = x1, type = "correlation", lag.max = 60, na.action = na.pass, main = "ACF residuals ARIMA(2,1,2)x(2,1,1)")
+Acf(x = x1, type = "partial",     lag.max = 60, na.action = na.pass, main = "PACF residuals ARIMA(2,1,2)x(2,1,1)")
+
+### Select the model
+#fit = fit1
+
+### Useful quantities
+npar1  = NROW(fit1$coef)                            ## Number of parameters
+lag1   = npar1 + c(1,2,5,10,12,15,24)
+res1   = residuals(fit)                            ## Residuals
+resst1 = ( res1 - mean(res1) ) / sqrt(fit$sigma2)  ## Standardized residuals
+
+#TEST DELLE CORRELAZIONI IN BLOCCO - TEST LJUNG BOX
+#Deve essere un test non significativo (p-value alto - accetto H0) per avere stazionarietà perchè voglio avere autocorrelazioni a lag h pari a 0 dato che i residui dovrebbero essere una WN
+lb = Box.test(x = res1, lag = 10, type = "Ljung-Box", fitdf = NROW(fit$coef))
+cat("\n", paste("Ljung-Box of", main) )
+lb = mapply(FUN = Box.test, lag = lag1, 
+MoreArgs = list(x = res1, type = "Ljung-Box", fitdf = npar1))[1:3, , drop = FALSE]
+print(lb)
+
+#TEST ARCH
+#Deve essere non significativo (p-value alto - accetto H0) per avere stazionarietà, non voglio autocorrelazione tra i residui dato che voglio che essi siano una WN
+cat("\n-----------------------------------------------------------------
+  ARCH based preliminary analyses\n")
+cat("ARCH test on |residuals|\n")
+lag = c(1, 2, 5, 10, 12, 15,24)
+#inserisco un vettore lag perchè poi uso mapply; almeno non devo stare a farlo ogni volta con 1 lag, 2 lag, 3 lag,,etc..
+at = mapply(FUN = ArchTest, lags = lag, 
+  MoreArgs = list(x = abs(x1), demean = TRUE))
+print(at[1:3,])
+```
+
+#### Modello (3,1,2)x(1,1,1)
+
+```{r}
+xreg=NULL
+fit = Arima(y = y, 
+             order = c(3, 1, 2), seasonal = list(order = c(1,1,1)), 
+             xreg = xreg, include.constant = FALSE)
+print(summary(fit))
+fit2 = fit 
+
+#### Ts plot, acf, pacf, of residuals 
+main="residuals ARIMA(3,1,2)x(1,1,1)"
+res2=residuals(fit2)
+x2 = res2
+plot(x2, type = "l", main = main, ylab = "")
+Acf(x = x2, type = "correlation", lag.max = 60, na.action = na.pass, main = "ACF residuals")
+Acf(x = x2, type = "partial",     lag.max = 60, na.action = na.pass, main = "PACF residuals")
+
+### Select the model
+#fit = fit2
+
+### Useful quantities
+npar2  = NROW(fit2$coef)                            ## Number of parameters
+lag2   = npar2 + c(1,2,5,10,12,15,24)
+res2   = residuals(fit)                            ## Residuals
+resst2 = ( res2 - mean(res2) ) / sqrt(fit2$sigma2)  ## Standardized residuals
+
+#TEST DELLE CORRELAZIONI IN BLOCCO - TEST LJUNG BOX
+#Deve essere un test non significativo (p-value alto - accetto H0) per avere stazionarietà perchè voglio avere autocorrelazioni a lag h pari a 0 dato che i residui dovrebbero essere una WN
+lb = Box.test(x = res2, lag = 10, type = "Ljung-Box", fitdf = NROW(fit2$coef))
+cat("\n", paste("Ljung-Box of", main, "at different lags\n") )
+lb = mapply(FUN = Box.test, lag = lag2, 
+MoreArgs = list(x = res2, type = "Ljung-Box", fitdf = npar2))[1:3, , drop = FALSE]
+print(lb)
+
+#TEST ARCH
+#Deve essere non significativo (p-value alto - accetto H0) per avere stazionarietà, non voglio autocorrelazione tra i residui dato che voglio che essi siano una WN
+cat("\n-----------------------------------------------------------------
+  ARCH based preliminary analyses\n")
+cat("ARCH test on |residuals|\n")
+lag = c(1, 2, 5, 10, 12,15, 24)
+#inserisco un vettore lag perchè poi uso mapply; almeno non devo stare a frlo ogni volta con 1 lag, 2 lag, 3 lag,,etc..
+at = mapply(FUN = ArchTest, lags = lag, 
+  MoreArgs = list(x = abs(x2), demean = TRUE))
+print(at[1:3,])
+```
+
+#### Modello (2,1,2)x(1,1,1)
+
+```{r}
+xreg=NULL
+fit = Arima(y = y, 
+             order = c(2, 1, 2), seasonal = list(order = c(1,1,1)), 
+             xreg = xreg, include.constant = FALSE)
+print(summary(fit))
+fit3 = fit 
+
+#### Ts plot, acf, pacf, of residuals 
+main="residuals ARIMA(2,1,2)x(1,1,1)"
+res3=residuals(fit3)
+x3 = res3
+plot(x3, type = "l", main = main, ylab = "")
+Acf(x = x3, type = "correlation", lag.max = 60, na.action = na.pass, main = "ACF residuals")
+Acf(x = x3, type = "partial", lag.max = 60, na.action = na.pass, main = "PACF residuals")
+
+### Useful quantities
+npar3  = NROW(fit3$coef)                            ## Number of parameters
+lag3   = npar3 + c(1,2,5,10,12,15,24)
+res3   = residuals(fit3)                            ## Residuals
+resst3 = ( res3 - mean(res3) ) / sqrt(fit3$sigma2)  ## Standardized residuals
+
+#TEST DELLE CORRELAZIONI IN BLOCCO - TEST LJUNG BOX
+#Deve essere un test non significativo (p-value alto - accetto H0) per avere stazionarietà perchè voglio avere autocorrelazioni a lag h pari a 0 dato che i residui dovrebbero essere una WN
+lb = Box.test(x = res3, lag = 10, type = "Ljung-Box", fitdf = NROW(fit3$coef))
+cat("\n", paste("Ljung-Box of", main, "at different lags\n") )
+lb = mapply(FUN = Box.test, lag = lag3, 
+MoreArgs = list(x = res3, type = "Ljung-Box", fitdf = npar3))[1:3, , drop = FALSE]
+print(lb)
+
+#TEST ARCH
+#Deve essere non significativo (p-value alto - accetto H0) per avere stazionarietà, non voglio autocorrelazione tra i residui dato che voglio che essi siano una WN
+cat("\n-----------------------------------------------------------------
+  ARCH based preliminary analyses\n")
+cat("ARCH test on |residuals|\n")
+lag = c(1, 2, 5, 10, 12,15, 24)
+#inserisco un vettore lag perchè poi uso mapply; almeno non devo stare a frlo ogni volta con 1 lag, 2 lag, 3 lag,,etc..
+at = mapply(FUN = ArchTest, lags = lag, 
+  MoreArgs = list(x = abs(x3), demean = TRUE))
+print(at[1:3,])
+```
+
+## MODELLAZIONE
+
+### a) EFFETTI CALENDARIO
+
+**METODO OCCHIOMETRICO PER SIGNIFICATIVITA' COEFFICIENTI:**
+
+Per vedere a occhio se un coefficiente è probabilmente significativo, **il prof guarda se il coefficiente è 2 o 3 volte più grande dello standard error**. In quel caso lo considera probabilmente significativo. Se è simile o più piccolo, lo considera irrilevante.
+
+**Se coeffiente circa =2 volte s.e--\> NI. forse significativo**
+
+**Se coefficiente \>3 volte s.e--\>SI, è significativo**
+
+Vado adesso ad aggiungere gli effetti calendario un po' alla volta per vedere come influenzano la modellazione della time series.
+
+#### a.1) ARIMA (2,1,2) x (2,1,1) + \["Mon","wd"\]
+
+```{r}
+xreg = cal[,c("Mon","wd"), drop=FALSE]
+fit = Arima(y = y, 
+             order = c(2, 1, 2), seasonal = list(order = c(2, 1, 1)), 
+             xreg = xreg, include.constant = FALSE)
+print(summary(fit))
+fit5 = fit
+
+#### Ts plot, acf, pacf, of residuals 
+main="Residuals ARIMA(2,1,2)x(2,1,1)+[Mon,wd]"
+res5=residuals(fit5)
+#par(mfrow=c(3,1))
+x5 = res5
+plot(x5, type = "l", main = "Residuals ARIMA(2,1,2)x(2,1,1)+[Mon,wd]", ylab = "")
+Acf(x = x5, type = "correlation", lag.max = 60, na.action = na.pass, main = "ACF residuals ARIMA(2,1,2)x(2,1,1)+[Mon,wd]", xlab="lag")
+Acf(x = x5, type = "partial", lag.max = 60, na.action = na.pass, main = "PACF residuals ARIMA(2,1,2)x(2,1,1)+[Mon,wd]", xlab="lag")
+
+#### Select the model
+fit = fit5
+
+#### Useful quantities
+npar5 = NROW(fit$coef)                            ## Number of parameters
+lag5 = npar5 + c(1, 2, 5, 10, 12, 15, 24)
+res5 = residuals(fit)                             ## Residuals
+resst5 = ( res5 - mean(res5) ) / sqrt(fit$sigma2)  ## Standardized residuals
+
+#TEST DELLE CORRELAZIONI IN BLOCCO - TEST LJUNG BOX
+lb = Box.test(x = res5, lag = 10, type = "Ljung-Box", fitdf = NROW(fit$coef))
+cat("\n", paste("Ljung-Box of", main) )
+lb = mapply(FUN = Box.test, lag = lag5, 
+  MoreArgs = list(x = x5, type = "Ljung-Box", fitdf = npar5))[1:3, , drop = FALSE]
+print(lb)
+
+cat("\n-----------------------------------------------------------------
+  ARCH based preliminary analyses\n")
+cat("ARCH test on |residuals| for ARIMA (2,1,2)x(2,1,1) + [Mon,wd]\n")
+lag = c(1, 2, 5, 10, 12, 15,24)
+#inserisco un vettore lag perchè poi uso mapply; almeno non devo stare a frlo ogni volta con 1 lag, 2 lag, 3 lag,,etc..
+at = mapply(FUN = ArchTest, lags = lag, 
+  MoreArgs = list(x = abs(x5), demean = TRUE))
+print(at[1:3,])
+
+```
+
+#### a.2) ARIMA (3,1,2) x (1,1,1) + \["Mon","wd"\]
+
+```{r}
+xreg = cal[,c("Mon","wd"), drop=FALSE]
+fit = Arima(y = y, 
+             order = c(3, 1, 2), seasonal = list(order = c(1, 1, 1)), 
+             xreg = xreg, include.constant = FALSE)
+print(summary(fit))
+fit6 = fit
+
+#### Ts plot, acf, pacf, of residuals 
+main="Residuals ARIMA(3,1,2)x(1,1,1) + [Mon,wd]"
+res6=residuals(fit6)
+#par(mfrow=c(3,1))
+x6 = res6
+plot(x6, type = "l", main = "Residuals ARIMA(3,1,2)x(1,1,1)", ylab = "")
+Acf(x = x6, type = "correlation", lag.max = 60, na.action = na.pass, main = "ACF residuals ARIMA(3,1,2)x(1,1,1)", xlab="lag")
+Acf(x = x6, type = "partial", lag.max = 60, na.action = na.pass, main = "PACF residuals ARIMA(3,1,2)x(1,1,1)", xlab="lag")
+
+#### Select the model
+fit = fit6
+
+#### Useful quantities
+npar6 = NROW(fit$coef)                            ## Number of parameters
+lag6 = npar6 + c(1, 2, 5, 10, 12, 15, 24)
+res6 = residuals(fit)                             ## Residuals
+resst6 = ( res6 - mean(res6) ) / sqrt(fit$sigma2)  ## Standardized residuals
+
+#TEST DELLE CORRELAZIONI IN BLOCCO - TEST LJUNG BOX
+lb = Box.test(x = res6, lag = 10, type = "Ljung-Box", fitdf = NROW(fit$coef))
+cat("\n", paste("Ljung-Box of", main) )
+lb = mapply(FUN = Box.test, lag = lag6, 
+  MoreArgs = list(x = x6, type = "Ljung-Box", fitdf = npar6))[1:3, , drop = FALSE]
+print(lb)
+
+cat("\n-----------------------------------------------------------------
+  ARCH based preliminary analyses\n")
+cat("ARCH test on |residual| of ARIMA(3,1,2)x(1,1,1)\n")
+lag = c(1, 2, 5, 10, 12, 15,24)
+#inserisco un vettore lag perchè poi uso mapply; almeno non devo stare a frlo ogni volta con 1 lag, 2 lag, 3 lag,,etc..
+at = mapply(FUN = ArchTest, lags = lag, 
+  MoreArgs = list(x = abs(x6), demean = TRUE))
+print(at[1:3,])
+```
+
+#### a.3) ARIMA (2,1,2) x (1,1,1) + \["Mon","wd"\]
+
+```{r}
+xreg = cal[,c("Mon","wd"), drop=FALSE]
+fit = Arima(y = y, 
+             order = c(2, 1, 2), seasonal = list(order = c(1, 1, 1)), 
+             xreg = xreg, include.constant = FALSE)
+print(summary(fit))
+fit7 = fit
+
+#### Ts plot, acf, pacf, of residuals 
+main="Residuals ARIMA(2,1,2)x(1,1,1)+[Mon,wd]"
+res7=residuals(fit7)
+x7 = res7
+plot(x7, type = "l", main = "Residuals ARIMA(2,1,2)x(1,1,1)+[Mon,wd]", ylab = "")
+Acf(x = x7, type = "correlation", lag.max = 36, na.action = na.pass, main = "ACF residuals ARIMA(2,1,2)x(1,1,1)+[Mon,wd]", xlab="lag")
+Acf(x = x7, type = "partial", lag.max = 36, na.action = na.pass, main = "PACF residuals ARIMA(2,1,2)x(1,1,1)+[Mon,wd]", xlab="lag")
+
+Acf(x = abs(x7), type = "correlation", lag.max = 36, na.action = na.pass, main = "ACF |residuals| ARIMA(2,1,2)x(1,1,1)+[Mon,wd]", xlab="lag")
+
+
+#### Select the model
+fit = fit7
+
+#### Useful quantities
+npar7 = NROW(fit$coef)                            ## Number of parameters
+lag7 = npar7 + c(1, 2, 5, 10, 12, 15, 24)
+res7 = residuals(fit)                             ## Residuals
+resst7 = ( res7 - mean(res7) ) / sqrt(fit$sigma2)  ## Standardized residuals
+
+#TEST DELLE CORRELAZIONI IN BLOCCO - TEST LJUNG BOX
+lb = Box.test(x = res7, lag = 10, type = "Ljung-Box", fitdf = NROW(fit$coef))
+cat("\n", paste("Ljung-Box of", main) )
+lb = mapply(FUN = Box.test, lag = lag7, 
+  MoreArgs = list(x = x7, type = "Ljung-Box", fitdf = npar7))[1:3, , drop = FALSE]
+print(lb)
+
+cat("\n-----------------------------------------------------------------
+  ARCH based preliminary analyses\n")
+cat("ARCH test on |residuals| of ARIMA(2,1,2)x(1,1,1)+[wd]\n")
+lag = c(1, 2, 5, 10, 12, 15,24)
+#inserisco un vettore lag perchè poi uso mapply; almeno non devo stare a frlo ogni volta con 1 lag, 2 lag, 3 lag,,etc..
+at = mapply(FUN = ArchTest, lags = lag, 
+  MoreArgs = list(x = abs(x7), demean = TRUE))
+print(at[1:3,])
+```
+
+##### a.3.2) Roots plot
+
+Il roots plot mostra quelle che sono le radici dei polinomi caratteristici del modello ARIMA. Un **Root Plot** (grafico delle radici) è la rappresentazione visiva delle soluzioni algebriche che determinano se il processo stocastico è stazionario.
+
+In questo caso molti dei punti si trovano all'esterno del cerchio unitario e quindi ricadono nella zona di stazionarietà. Le roots della parte stagionale (come da teoria) si dispongono equispaziate sul cerchio unitario. Una root è sempre pari a 1.
+
+```{r}
+#| eval: true
+
+fit=fit7
+root = .arma.roots(fit = fit)
+
+#| eval: true
+#| label: fig-AllRoots
+#| fig-cap: "All AR and MA roots."
+#| fig-width: 7
+#| fig-height: 7
+.circle(win = 2, main = "All roots")
+points(root$root.long$ar, col = "red")
+points(root$root.long$ma, col = "blue")
+
+```
+
+Dall'analisi delle radici dei polinomi caratteristici del modello ARIMA(2,1,2)(1,1,1)+\[Mon,wd\] sembra emergere una sovra-parametrizzazione nella parte "non-seasonal". Andando a guardare i coefficienti e i loro standard errors non sembrano però esserci parametri non significativi.
+
+```{r}
+#| eval: true
+#| label: fig-NonSeasRoots
+#| fig-cap: "AR and MA non seasonal (left) and seasonal (right) roots."
+#| fig-width: 7
+#| fig-height: 4
+par(mfrow = c(1,2), mar = c(4,4,4,0.5))
+.circle(win = 2.5, main = "Non seasonal roots")
+points(root$root$ar, col = "red")
+points(root$root$ma, col = "blue")
+.circle(win = 3.5, main = "Seasonal roots")
+points(root$root$sar, col = "red")
+points(root$root$sma, col = "blue")
+```
+
+### b)EFFETTI ANOMALIE
+
+Per eseguire un'analisi dettagliata della anomalie si utilizza l'algoritmo Chen-Liu implementato nel package **tsoutliers**, la principale funzione è la funzione **tso.**
+
+**Cval** sta per critical value e serve a identificare il numero di anomalie possibili da trovare. E' un parametro interno all'algoritmo e funziona circa come un valore critico di una normale standard. Maggiore è il cval meno saranno le anomalie riscontrate. Aumento il cval nel caso l'algoritmo trovi un numero troppo elevato di anomalie.
+
+I **punti rossi** sono le **osservazioni dove si manifestano le anomalie** però la **linea blu** è la **TS se non ci fossero le anomalie**. La linea blu è la TS depurata dalle anomalie mentre quella grigia è quella reale.
+
+**RISULTATI:** NON CI SONO ANOMALIE DA SEGNALARE NELLA TIME SERIES
+
+#### b.1)ARIMA (2,1,2)x(1,1,1) + \["Mon","wd"\] +ANOMALIE
+
+```{r}
+#####################################
+## ARIMA CON ANOMALIE
+#####################################
+
+#### Copy model
+fit = fit7
+#### Extract settings
+settings = .Arima.settings(fit = fit)
+#### Prepare xreg
+xreg = cal[,c("Mon","wd"), drop=FALSE]
+xreg = if ( settings$include.drift ) { cbind(drift, xreg) } else { xreg }
+#### Fit
+fit = tso(y = y, xreg = xreg,
+           types = c("AO", "LS", "TC"), delta = 0.7, cval = 4,
+           maxit = 10, maxit.iloop = 100, maxit.oloop = 10,
+           # tsmethod = "auto.arima",
+           # args.tsmethod = list(allowdrift = false, ic = "bic", trace = true) )
+           tsmethod = "arima",
+           args.tsmethod = list( order = settings$order, seasonal = settings$seasonal) )
+fit1.o = fit
+#### Reporting
+print(fit)
+plot(fit)
+#### Extract outlier effects
+oeff = outliers.effects(mo = fit$outliers, n = NROW(y), pars = coef(fit$fit),
+                         weights = FALSE)
+## Plot weighted effects
+# plot(x = data1$Time, y = rowSums(oeff), type = "l")
+#### Estimate again
+xreg = as.matrix( oeff )
+fit = Arima(y = y,
+             order = settings$order, seasonal = settings$seasonal,
+             include.constant = settings$include.constant,
+             xreg = xreg)
+## Only in case of transformed variable
+# llstats.adj3 <- .loglik(fit = fit, g = "log")
+```
+
+## DIAGNOSTICA FINALI SUI RESIDUI DEI MODELLI
+
+Nella parte di diagnostica mi devo concentrare sui **RESIDUI.**
+
+I residui sono la stima di "ciò che il modello non spiega" , **se il modello funziona i residui devono essere dei WN!!!**
+
+Continuo a cercare il modello migliore fino a che i residui non si dispongono come un processo WN, ovvero nell'ACF le correlazioni dei residui sono tutte nella regione di accettazione quindi sono pari a 0. In un PS WN non ho correlazioni significative perchè le variabili sono tra loro indipendenti e identicamente distribuite.
+
+#### a)Test Ljung-Box e grafici ACF/PACF
+
+##### a.1) Grafici ACF-PACF dei residui
+
+```{r}
+#### Select the model
+fit = fit7
+
+#### Useful quantities
+npar7 = NROW(fit$coef)                            ## Number of parameters
+lag7 = npar7 + c(1, 2, 5, 10, 12, 15,24)
+res7 = residuals(fit)                            ## Residuals
+resst7 = ( res7 - mean(res7) ) / sqrt(fit$sigma2)  ## Standardized residuals
+
+#### Ts plot, acf, pacf, Ljung-Box of residuals
+#par(mfrow = c(3,1))
+main = "Residuals"
+x7 = res7
+plot(x7, type = "l", main = main, ylab = "Residuals for ARIMA(2,1,2)x(1,1,1) + [Mon,wd]", xlab="")
+Acf(x = x7, type = "correlation", lag.max = 60, na.action = na.pass, main = "ACF residuals ARIMA(2,1,2)x(1,1,1) + [Mon,wd]")
+Acf(x = x7, type = "partial",     lag.max = 60, na.action = na.pass, main = "PACF residuals ARIMA(2,1,2)x(1,1,1) + [Mon,wd] ")
+
+```
+
+```         
+Series: y  Regression with ARIMA(2,1,2)(1,1,1)[12] errors   Coefficients:          ar1     ar2      ma1      ma2    sar1     sma1      Mon      wd       0.4926  0.4022  -0.5200  -0.3208  0.0393  -0.9369  -1.0517  0.4435 s.e.  0.5809  0.5479   0.5969   0.5490  0.0491   0.0235   0.3464  0.0513  sigma^2 = 40.59:  log likelihood = -1754.48 AIC=3526.95   AICc=3527.29   BIC=3565.47  Training set error measures:                     ME     RMSE      MAE       MPE    MAPE      MASE         ACF1 Training set 0.1974193 6.247539 4.790337 0.1220812 3.05545 0.2548077 0.0003342331
+```
+
+##### a.2) Test Ljung-Box residui
+
+Il test LJUNG-BOX serve a valutare se abbiamo autocorrelazioni significative tra i dati.
+
+In questo caso eseguiamo il test sui residui e vogliamo che le correlazioni tra loro siano pari a 0 quindi il test deve essere NON SIGNIFICATIVO. Voglio questo risultato poichè io voglio accettare l'ipotesi nulla che le correlazioni dei residui da lag 1 a lag h siano uguali a 0.
+
+In questo modo posso affermare che i residui si dispongono come un processo WN e quindi il modello ARIMA scelto è quello corretto.
+
+Per questo motivo vogliamo che il test sia NON SIGNIFICATIVO.
+
+**RISULTATI:** Il test risulta non significativo da lag pari a 10 in poi. Per lag=5 abbiamo un p-value borderline al 5%. Rimane un'autocorrelazione non spiegata a lag bassi (lag=1 e lag=2) probabilmente data dal rumore della time series.
+
+```{r}
+#### Select the model
+fit = fit7
+
+#### Useful quantities
+npar7 = NROW(fit$coef)                            ## Number of parameters
+lag7 = npar7 + c(1, 2, 5, 10, 12, 15, 24)
+res7 = residuals(fit)                             ## Residuals
+resst7 = ( res7 - mean(res7) ) / sqrt(fit$sigma2)  ## Standardized residuals
+
+#TEST DELLE CORRELAZIONI DEI RESIDUI IN BLOCCO - TEST LJUNG BOX
+lb = Box.test(x = res7, lag = 10, type = "Ljung-Box", fitdf = NROW(fit$coef))
+cat("\n", paste("Ljung-Box of residuals at different lags\n") )
+lb = mapply(FUN = Box.test, lag = lag7, 
+  MoreArgs = list(x = x7, type = "Ljung-Box", fitdf = npar7))[1:3, , drop = FALSE]
+print(lb)
+
+#### Ts plot, acf of residuals^2
+main = "Residuals"
+x7 = res7
+plot(x7, type = "l", main = main, ylab = "")
+Acf(x = x7, type = "correlation", lag.max = 80, na.action = na.pass, main = "ACF residuals ARIMA(2,1,2)x(1,1,1) + [Mon,wd]")
+
+#### Ts plot, acf of |residuals|
+#main = "|residuals|"
+#x7 = abs(res7)
+#plot(x7, type = "l", main = main, ylab = "")
+#Acf(x = x7, type = "correlation", lag.max = 80, na.action = na.pass, main = "ACF |residuals| ARIMA(2,1,2)x(2,1,1) + [wd]")
+```
+
+#### b)Test ARCH
+
+Il test ARCH serve a valutare se abbiamo eteroschedasticità tra i dati. In questo caso il test si esegue sui residui perchè vogliamo che i residui si distribuiscano come delle WN e quindi i residui devono disporsi casualmente ed essere omoschedasticiti.
+
+Per questo motivo vogliamo che il test sia NON SIGNIFICATIVO.
+
+**RISULTATI:** I residui sono omoschedastici dato che il test è non significativo a tutti i lag.
+
+```{r}
+#### Select the model
+fit = fit7
+
+#### Useful quantities
+npar7 = NROW(fit$coef)                            ## Number of parameters
+lag7 = npar5 + c(1, 2, 5, 10, 12, 15, 24)
+res7 = residuals(fit)                            ## Residuals
+resst7 = ( res7 - mean(res7) ) / sqrt(fit$sigma2)  ## Standardized residuals  
+
+#### Another diagnostic: the ARCH test
+cat("\n-----------------------------------------------------------------
+  ARCH based preliminary analyses\n")
+cat("ARCH test on demeaned log-returns\n")
+lag = c(1, 2, 5, 10, 12,15, 24)
+#inserisco un vettore lag perchè poi uso mapply; almeno non devo stare a frlo ogni volta con 1 lag, 2 lag, 3 lag,,etc..
+at = mapply(FUN = ArchTest, lags = lag, 
+  MoreArgs = list(x = res7^2, demean = TRUE))
+print(at[1:3,])
+```
+
+## PREVISIONI DEI MODELLI
+
+### 1)Previsioni ex-post e misure di errore di previsione
+
+Per controllare se le mie previsioni sul futuro (ex-ante) sono affidabili utilizzo le previsioni ex-post.
+
+Le previsioni ex-post sono previsioni fatte su un sottoinsieme di variabili interne alla TS in modo da poterle utilizzare per valutare la qualità del modello stimato. In pratica una volta stimato il modello uso quest'ultimo per prevedere un gruppo di valori già ottenuti tramite la TS. **Più i valori stimati sono vicini ai valori reali (quindi minore sarà l'errore di previsione), migliore sarà il mio modello stimato!!!**
+
+**RISULTATI:** Dai risultati derivanti dagli errori di previsione andiamo parzialmente a confutare quanto visto fin'ora. Fino a questo punto il modello scelto come migliore era il modello ARIMA(2,1,2)x(1,1,1)+\[Mon,wd\] mentre andando a guardare gli errori di previsione il migliore modello sembra essere ARIMA(3,1,2)x(1,1,1) + \[Mon,wd\].
+
+1.  ARIMA(2,1,2)x(2,1,1) + \[Mon,wd\]
+
+2.  ARIMA (3,1,2)x(1,1,1) + \[Mon,wd\]
+
+3.  ARIMA(2,1,2)x(1,1,1)+\[Mon,wd\]
+
+**!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!Devo valutare se scegliere un modello che restituisce migliori previsioni o un modello più statisticamente preciso!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!**
+
+```{r}
+#fit5 #modello (2,1,2)x(2,1,1) + [Mon,wd]  "blue"
+#fit6 #modello (3,1,2)x(1,1,1) + [Mon,wd]  "green"
+#fit7 #modello (2,1,2)x(1,1,1) + [Mon,wd]  "red"
+
+#---------------------------------------------------------------------------------
+#### Settings
+J = 24                                              ## How many ex-post forecast to compute
+H = 6                                               ## Forecasting horizon
+t1 = .predict.t1(nobs = NROW(y), J = J, n.ahead = H) ## 1st obs in the ex-post period (needed below)
+#---------------------------------------------------------------------------------
+#### modello (2,1,2)x(2,1,1) + [Mon,wd]
+newxreg= cal[,c("Mon","wd"), drop=FALSE]
+pred5.1 = .predict(object = fit5, n.ahead = H, t = t1, y = y, xreg = newxreg,
+                    fixed.n.ahead = TRUE)
+
+#### modello (3,1,2)x(1,1,1) + [Mon,wd] 
+newxreg=cal[,c("Mon","wd"), drop=FALSE]
+pred7.1 = .predict(object = fit6, n.ahead = H, t = t1, y = y, xreg = newxreg,
+                    fixed.n.ahead = TRUE)
+
+#### modello(2,1,2)x(1,1,1) + [Mon,wd]
+newxreg=cal[,c("Mon","wd"), drop=FALSE]
+pred6.1 = .predict(object = fit7, n.ahead = H, t = t1, y = y, xreg = newxreg,
+                    fixed.n.ahead = TRUE)
+
+#### Naive (1,1,1)x(1,1,1)
+xreg=NULL
+naive = Arima(y = y, 
+             order = c(1, 1, 1), seasonal = list(order = c(1, 1, 1)), 
+             xreg = xreg, include.constant = FALSE)
+
+predn.1 = .predict.naive(fit = naive, J = J, n.ahead = H)
+
+#### Bands
+x5 = .pred.bands(pred = pred5.1, alpha = 0.05)
+x6 = .pred.bands(pred = pred6.1, alpha = 0.05)
+x7 = .pred.bands(pred = pred7.1, alpha = 0.05)
+
+#### Error Measures
+em5.1  = .ErrorMeasures(y = y, fit = x5$mean, naive = predn.1)
+em6.1  = .ErrorMeasures(y = y, fit = x6$mean, naive = predn.1)
+em7.1  = .ErrorMeasures(y = y, fit = x7$mean, naive = predn.1)
+emn.1  = .ErrorMeasures(y = y, fit = predn.1, naive = predn.1)
+
+## Print
+ErrorMeas = data.frame(
+  model = c("(2,1,2)x(2,1,1) + [Mon,wd]","(3,1,2)x(1,1,1) + [Mon,wd] ","(2,1,2)x(1,1,1) + [Mon,wd]","naive"),
+  h = H,
+  rbind( em5.1, em6.1, em7.1, emn.1, deparse.level = 0 ) )
+print( ErrorMeas )
+
+#### Plot
+ind  = (NROW(y) - J + 1) : NROW(y)
+ind1 = 1 : NROW(ind)
+par(mfrow = c(1,1))
+ylim = range(
+  x5$lower[ind1], x5$upper[ind1],
+  x6$lower[ind1], x6$upper[ind1], 
+  x7$lower[ind1], x7$upper[ind1])
+time = house$time[ind]
+plot(x = time, y = y[ind], ylim = ylim,
+     main = "Forecasts ex-post of the past 24 months", xlab="", ylab = "thousands")
+lines(x = time, y = x5$mean[ind1],  col = "blue", lwd=3)
+lines(x = time, y = x6$mean[ind1],  col = "green", lwd=3)
+lines(x = time, y = x7$mean[ind1],  col = "red", lwd=3)
+lines(x = time, y = predn.1[ind1],  col = "black", lwd=3, lty = "solid")
+```
+
+### 2)Previsioni ex-ante
+
+```{r}
+################################
+## Ex-ante (genuine) forecasts: from 1 to H steps ahead
+################################
+#fit5 #modello (2,1,2)x(2,1,1) + [Mon,wd]
+#fit6 #modello (3,1,2)x(1,1,1) + [Mon,wd] 
+#fit7 #modello (2,1,2)x(1,1,1) + [Mon,wd]
+
+#### Settings
+H  = 12      ## Maximum forecasting horizon
+t1 = NROW(y) ## Last obs in the info set (T)
+
+#### Generate time
+## Useful for extending calendar and for plotting
+time1 = .extend.time(x = house$time, n.ahead = H, by = "month")
+
+#se ho regressori esterni
+x2 =.calendarEffects(time = time1)[, colnames(cal), drop = FALSE]
+newxreg = as.matrix(rbind(cal, x2))
+#--------------------------------------------------------------------------------
+#modello (2,1,2)x(2,1,1) + [Mon,wd]
+xreg=newxreg[,c("Mon","wd"), drop=FALSE]
+pred5 = .predict(object = fit5, n.ahead = H, t = t1, y = y, xreg = xreg,
+                  fixed.n.ahead = FALSE)
+
+#modello (3,1,2)x(1,1,1) + [Mon,wd] 
+xreg=newxreg[,c("Mon","wd"), drop=FALSE]
+pred6 = .predict(object = fit6, n.ahead = H, t = t1, y = y, xreg = xreg,
+                  fixed.n.ahead = FALSE)
+
+#modello (2,1,2)x(1,1,1) + [Mon,wd]
+xreg=newxreg[,c("Mon","wd"), drop=FALSE]
+pred7 = .predict(object = fit7, n.ahead = H, t = t1, y = y, xreg = xreg,
+                  fixed.n.ahead = FALSE)
+
+#### Naive
+predn = .predict.naive(fit = naive, J = H, n.ahead = H) 
+
+#### Bands
+# x1 <- .pred.bands(pred = pred1, alpha = 0.05, g = "log10")   ## Only in case of transformed variable
+x5 = .pred.bands(pred = pred5, alpha = 0.05)
+x6 = .pred.bands(pred = pred6, alpha = 0.05)
+x7 = .pred.bands(pred = pred7, alpha = 0.05)
+
+#### Print
+print( cbind(t = x5$t, pred5 = x5$mean, pred6 = x6$mean, pred7 = x7$mean,naive = predn) )
+
+#### Plot
+par(mfrow = c(1,1))
+
+#ylim = range(
+#  x5$lower, x5$upper, x6$lower, x6$upper,
+#  x7$lower, x7$upper, predn )
+
+ylim = range(x7$lower, x7$upper)
+time = time1
+plot(x = time, y = x7$mean, 
+     type = "o",      
+     lwd = 3,         
+     pch = 19,        
+     main = "Forecasts from Set2025 to Aug2026", 
+     ylab = "thousands",
+     xlab="",
+     ylim = ylim)
+lines(x = time, y = x7$mean,  col = "red")
+lines(x = time, y = x7$lower, col = "black", lty = 2) # Limite inferiore
+lines(x = time, y = x7$upper, col = "black", lty = 2) #Limite superiore
+
+pred7
+#lines(x = time, y = x5$mean,  col = "blue")
+#lines(x = time, y = x6$mean,  col = "green")
+#lines(x = time, y = predn, col = "black")
+```
+
+modello (2,1,2)x(2,1,1) + \[Mon,wd\] ——–\>BLU
+
+modello (3,1,2)x(1,1,1) + \[Mon,wd\] —————-\>VERDE
+
+modello (2,1,2)x(1,1,1) + \[Mon,wd\] ———-\>ROSSO
+
+modello naive——–\> NERO
