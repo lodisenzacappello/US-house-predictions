@@ -1,3 +1,5 @@
+FORECASTING DEL NUMERO DI UNITA' ABITATIVE NEGLI STATI UNITI
+
 Il progetto si basa sull'analisi della serie temporale del numero di  "Unità abitative a scopo residenziale autorizzate ma non ancora costruite negli US - Totale delle unita [migliaia di unità ] non corrette per la stagionalità".
 La time series in analisi è stata redatta dall' "U.S. Census Bureau" ed è composta da 548 osservazioni.
 La time series contiene le misurazioni mensili da gennaio 1980 fino ad agosto 2025.
